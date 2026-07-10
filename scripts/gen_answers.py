@@ -14,7 +14,14 @@ import asyncio
 from pathlib import Path
 
 from sdx.config import GENERATED_DIR, gen_concurrency, gen_temperature, teacher_config
-from sdx.corpus import load_corpus, notes_by_slugs, read_jsonl, write_jsonl
+from sdx.corpus import (
+    load_corpus,
+    load_grounding,
+    notes_by_slugs,
+    read_jsonl,
+    retrieve_grounding,
+    write_jsonl,
+)
 from sdx.llm import Teacher, map_bounded
 from sdx.schema import ANSWER_SECTIONS, Scenario, SFTRecord
 
@@ -45,20 +52,24 @@ any section, do not add others, do not change the heading level:
 Write a thorough but focused answer (600-1100 words). No preamble, start at the first header."""
 
 
-def _refs_for(scn: Scenario, notes) -> str:
+def _refs_for(scn: Scenario, notes, grounding: list[dict]) -> str:
     picked = notes_by_slugs(notes, scn.topics)
     if not picked:  # fall back to a small default set if topics didn't match
         picked = notes[:4]
-    return "\n\n---\n\n".join(f"[{n.slug}] {n.title}\n{n.text}" for n in picked)
+    parts = [f"[curated:{n.slug}] {n.title}\n{n.text}" for n in picked]
+    # Real authoritative excerpts from the GitHub grounding pool, retrieved by relevance.
+    for g in retrieve_grounding(scn.prompt + " " + " ".join(scn.topics), grounding, k=3):
+        parts.append(f"[source:{g['source']}] {g['heading']}\n{g['text']}")
+    return "\n\n---\n\n".join(parts)
 
 
-async def _one(teacher: Teacher, scn: Scenario, notes, temp: float) -> SFTRecord:
+async def _one(teacher: Teacher, scn: Scenario, notes, grounding: list[dict], temp: float) -> SFTRecord:
     msgs = [
         {"role": "system", "content": SYSTEM},
         {
             "role": "user",
             "content": PROMPT_TMPL.format(
-                prompt=scn.prompt, refs=_refs_for(scn, notes), sections=SECTIONS_BLOCK
+                prompt=scn.prompt, refs=_refs_for(scn, notes, grounding), sections=SECTIONS_BLOCK
             ),
         },
     ]
@@ -80,12 +91,13 @@ async def main() -> None:
     args = ap.parse_args()
 
     notes = load_corpus()
+    grounding = load_grounding()
     scenarios = [Scenario(**row) for row in read_jsonl(Path(args.inp))]
     teacher = Teacher(teacher_config())
     temp = gen_temperature()
 
     async def worker(scn: Scenario) -> SFTRecord:
-        return await _one(teacher, scn, notes, temp)
+        return await _one(teacher, scn, notes, grounding, temp)
 
     results = await map_bounded(scenarios, worker, concurrency=gen_concurrency())
     records = [r for r in results if r is not None]
