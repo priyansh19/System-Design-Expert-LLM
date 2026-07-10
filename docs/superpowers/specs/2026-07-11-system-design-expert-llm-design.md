@@ -59,10 +59,10 @@ seed corpus (curated MD)
 ## 5. Evaluation harness
 
 - **Held-out set:** ~50–80 architecture prompts not present in training, spanning domains and scales.
-- **Judge:** DeepSeek (or GPT-4o) scores each answer 1–10 on a rubric: correctness, tradeoff depth, completeness, feasibility, clarity.
+- **Judge:** a model from a **different family than the teacher** (teacher = DeepSeek, so judge = GPT-4o or Gemini-1.5-Pro) scores each answer 1–10 on a rubric: correctness, tradeoff depth, completeness, feasibility, clarity. Using a non-DeepSeek judge avoids teacher-judge style correlation inflating scores.
 - **Baselines:** (a) base Qwen2.5-7B, (b) our fine-tune, (c) a strong frontier API model as reference ceiling.
 - **Report:** per-dimension mean scores + comparison table. Success = fine-tune clearly beats base and closes most of the gap to the API ceiling.
-- **Bias controls:** fixed rubric prompt, randomized answer order, human spot-check of a sample.
+- **Bias controls:** judge family != teacher family; fixed rubric prompt; randomized answer order; human spot-check of a sample.
 
 ## 6. Deployment
 
@@ -89,7 +89,7 @@ SystemDesignExpertLLM/
 | Kaggle 12h session cutoff | Checkpoint + resume via Kaggle Dataset |
 | Teacher hallucination | Seed-corpus grounding + judge-based filter |
 | DeepSeek API cost | Capped; ~$3–8 est. for 10k pairs |
-| Judge bias | Randomized order, fixed rubric, human spot-check |
+| Judge bias | Judge family != teacher family; randomized order; fixed rubric; human spot-check |
 | Single-GPU memory limits | QLoRA 4-bit + Unsloth + max_seq 4096 + packing |
 
 ## 9. Out of scope (v1)
