@@ -1,0 +1,29 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.ruff_cache/
+
+# Data artifacts (generated; large). Seed corpus IS tracked.
+data/generated/
+data/cache/
+*.jsonl.tmp
+
+# Model artifacts
+*.gguf
+*.safetensors
+adapters/
+merged/
+checkpoints/
+
+# Local model embedding cache (fastembed)
+.fastembed_cache/
+.local_cache/
+
+# OS
+.DS_Store
+Thumbs.db

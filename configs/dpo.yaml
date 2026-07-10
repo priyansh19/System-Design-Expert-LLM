@@ -1,0 +1,28 @@
+# DPO config. Loads the SFT adapter and refines on preference pairs.
+model:
+  base: "unsloth/Qwen2.5-7B-Instruct"
+  sft_adapter: "adapters/sft"          # start from the SFT-tuned adapter
+  max_seq_length: 4096
+  load_in_4bit: true
+
+lora:
+  r: 32
+  alpha: 32
+  dropout: 0.05
+
+train:
+  dataset: "data/generated/dpo.jsonl"
+  beta: 0.1
+  epochs: 1
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 5.0e-6
+  lr_scheduler: cosine
+  warmup_ratio: 0.1
+  seed: 3407
+  save_steps: 100
+  logging_steps: 10
+
+output:
+  adapter_dir: "adapters/dpo"
+  merged_dir: "merged/dpo-fp16"

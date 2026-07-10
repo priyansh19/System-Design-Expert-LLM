@@ -1,0 +1,37 @@
+# SFT (QLoRA) config. Consumed by notebooks/kaggle_sft.ipynb via sdx.config.
+model:
+  base: "unsloth/Qwen2.5-7B-Instruct"   # Unsloth 4-bit-ready repo; fallback: unsloth/Meta-Llama-3.1-8B-Instruct
+  max_seq_length: 4096
+  load_in_4bit: true
+
+lora:
+  r: 32
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  use_gradient_checkpointing: "unsloth"
+
+train:
+  dataset: "data/generated/sft.jsonl"
+  epochs: 3
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 8      # effective batch = 16
+  learning_rate: 2.0e-4
+  lr_scheduler: cosine
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  packing: true
+  seed: 3407
+  save_steps: 100                     # checkpoint often; Kaggle 12h session safety
+  logging_steps: 10
+
+output:
+  adapter_dir: "adapters/sft"
+  merged_dir: "merged/sft-fp16"
