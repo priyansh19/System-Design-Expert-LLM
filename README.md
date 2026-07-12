@@ -33,6 +33,23 @@ Providers are OpenAI-compatible and selected via env:
 - **Base** (`BASE_PROVIDER`, default `ollama`) — produces DPO "rejected" answers locally.
 - **Judge** (`JUDGE_PROVIDER`, default `openai`) — must be a *different family* than the teacher.
 
+## Grounding sources
+
+The teacher answers are grounded in two pools so recommendations trace back to primary sources:
+
+```bash
+# GitHub references (system-design-primer, ByteByteGo 101, karanpratapsingh) -> 431 chunks
+python scripts/ingest_sources.py
+
+# 29 canonical research papers (Dynamo, GFS, Bigtable, Spanner, Raft, Paxos, ZooKeeper,
+# MapReduce, Dataflow, Kafka, Memcache, TAO, Dapper, Borg, Consistent Hashing, ...) -> ~1.5k chunks
+python scripts/ingest_papers.py
+```
+
+Both write heading-scoped `{source, heading, text, words}` chunks into
+`data/generated/grounding.jsonl` (BM25-retrievable). `ingest_papers.py` caches PDFs under
+`data/sources/papers/` and is idempotent (re-running replaces only `paper:*` rows).
+
 ## Data collection
 
 ```bash
