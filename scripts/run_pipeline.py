@@ -32,7 +32,7 @@ from sdx.corpus import (
     read_jsonl,
     write_jsonl,
 )
-from sdx.llm import Teacher, map_bounded
+from sdx.llm import make_teacher, map_bounded
 from sdx.schema import DPORecord, SFTRecord
 
 
@@ -68,7 +68,7 @@ async def main() -> None:
     notes = load_corpus()
     grounding = load_grounding()
     index = corpus_index(notes)
-    teacher = Teacher(teacher_config())
+    teacher = make_teacher(teacher_config())
     temp = gen_temperature()
     concurrency = gen_concurrency()
     print(f"teacher={teacher.cfg.name}:{teacher.cfg.model} notes={len(notes)} grounding={len(grounding)}")
@@ -101,7 +101,7 @@ async def main() -> None:
     print(f"SFT done: {len(pool)} -> {len(deduped)} after dedup -> {sft_path}")
 
     if args.dpo and deduped:
-        base = Teacher(base_config())
+        base = make_teacher(base_config())
         subset = deduped[: args.dpo]
 
         async def dpo_worker(rec: SFTRecord) -> DPORecord:

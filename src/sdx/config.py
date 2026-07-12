@@ -14,7 +14,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)  # .env is the source of truth (wins over stale shell env vars)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "data"
@@ -45,15 +45,17 @@ _DEFAULT_BASE_URL = {
     "xai": "https://api.x.ai/v1",
     "openai": "https://api.openai.com/v1",
     "ollama": "http://localhost:11434/v1",
+    "claude": "cli",  # sentinel: claude CLI provider is not HTTP-based
 }
 _DEFAULT_MODEL = {
     "deepseek": "deepseek-chat",
     "xai": "grok-4-fast",
     "openai": "gpt-4o",
     "ollama": "qwen2.5:7b",
+    "claude": "sonnet",  # CLI model alias; auth via the logged-in claude CLI
 }
-# Providers that need no real API key (local).
-_NO_KEY = {"ollama"}
+# Providers that need no real API key (local / CLI-authenticated).
+_NO_KEY = {"ollama", "claude"}
 
 
 def provider_config(provider: str | None = None) -> ProviderConfig:

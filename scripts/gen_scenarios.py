@@ -15,7 +15,7 @@ from pathlib import Path
 
 from sdx.config import GENERATED_DIR, gen_concurrency, gen_temperature, teacher_config
 from sdx.corpus import corpus_index, load_corpus, write_jsonl
-from sdx.llm import Teacher, map_bounded
+from sdx.llm import Teacher, make_teacher, map_bounded
 from sdx.schema import Scenario
 
 DOMAINS = [
@@ -68,7 +68,7 @@ async def main() -> None:
 
     notes = load_corpus()
     index = corpus_index(notes)
-    teacher = Teacher(teacher_config())
+    teacher = make_teacher(teacher_config())
     temp = gen_temperature()
 
     # Build a balanced grid of (domain, scale) work items cycling to n.

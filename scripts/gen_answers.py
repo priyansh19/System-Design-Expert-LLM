@@ -22,7 +22,7 @@ from sdx.corpus import (
     retrieve_grounding,
     write_jsonl,
 )
-from sdx.llm import Teacher, map_bounded
+from sdx.llm import Teacher, make_teacher, map_bounded
 from sdx.schema import ANSWER_SECTIONS, Scenario, SFTRecord
 
 SYSTEM = (
@@ -93,7 +93,7 @@ async def main() -> None:
     notes = load_corpus()
     grounding = load_grounding()
     scenarios = [Scenario(**row) for row in read_jsonl(Path(args.inp))]
-    teacher = Teacher(teacher_config())
+    teacher = make_teacher(teacher_config())
     temp = gen_temperature()
 
     async def worker(scn: Scenario) -> SFTRecord:

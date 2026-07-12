@@ -18,7 +18,7 @@ from pathlib import Path
 
 from sdx.config import GENERATED_DIR, base_config, gen_concurrency
 from sdx.corpus import read_jsonl, write_jsonl
-from sdx.llm import Teacher, map_bounded
+from sdx.llm import Teacher, make_teacher, map_bounded
 from sdx.schema import DPORecord, SFTRecord
 
 # The base model answers WITHOUT the corpus grounding / strict format scaffolding,
@@ -43,7 +43,7 @@ async def main() -> None:
     args = ap.parse_args()
 
     records = [SFTRecord(**row) for row in read_jsonl(Path(args.inp))][: args.n]
-    base = Teacher(base_config())
+    base = make_teacher(base_config())
 
     async def worker(rec: SFTRecord) -> DPORecord:
         return await _rejected(base, rec)

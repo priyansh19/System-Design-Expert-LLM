@@ -25,11 +25,12 @@ seed corpus (curated markdown)                data/seed_corpus/*.md
 ```bash
 uv venv --python 3.12
 uv pip install -e .
-cp .env.example .env      # then fill in DEEPSEEK_API_KEY (teacher)
+cp .env.example .env      # set TEACHER_PROVIDER (claude = no key; or add DEEPSEEK_API_KEY)
 ```
 
-Providers are OpenAI-compatible and selected via env:
-- **Teacher** (`TEACHER_PROVIDER`, default `deepseek`) — generates scenarios + answers.
+Providers are OpenAI-compatible (or the local `claude` CLI) and selected via env:
+- **Teacher** (`TEACHER_PROVIDER`) — generates scenarios + answers. Options: `claude`
+  (local Claude Code CLI, no API key — auth via the logged-in CLI), `deepseek`, `xai`, `openai`.
 - **Base** (`BASE_PROVIDER`, default `ollama`) — produces DPO "rejected" answers locally.
 - **Judge** (`JUDGE_PROVIDER`, default `openai`) — must be a *different family* than the teacher.
 
@@ -53,21 +54,34 @@ Both write heading-scoped `{source, heading, text, words}` chunks into
 ## Data collection
 
 ```bash
-# 1. Generate scenarios (grounded in the seed corpus topic index)
-python scripts/gen_scenarios.py --n 500
-
-# 2. Generate structured, grounded answers
-python scripts/gen_answers.py
-
-# 3. Filter: structure + length gates, then embedding dedup
-python scripts/quality_filter.py
-
-# 4. Build DPO preference pairs (chosen=teacher, rejected=base model)
-python scripts/build_dpo.py --n 1200
+# One shot: N rounds of (scenarios -> answers -> gates), accumulate, dedup, then DPO.
+# Resumable — re-running loads the existing sft.jsonl and adds more rounds.
+python scripts/run_pipeline.py --rounds 15 --per-round 20 --dpo 1200
 ```
 
-Outputs land in `data/generated/` (gitignored). The seed corpus in `data/seed_corpus/` **is**
+Or run each stage manually:
+
+```bash
+python scripts/gen_scenarios.py --n 500   # scenarios grounded in the seed corpus topic index
+python scripts/gen_answers.py             # structured, grounded answers
+python scripts/quality_filter.py          # structure + length gates, then embedding dedup
+python scripts/build_dpo.py --n 1200      # preference pairs (chosen=teacher, rejected=base)
+```
+
+Outputs land in `data/generated/` (gitignored): `sft.jsonl` (`instruction`/`output`) and
+`dpo.jsonl` (`prompt`/`chosen`/`rejected`). The seed corpus in `data/seed_corpus/` **is**
 tracked — it is the factual grounding and doubles as a future RAG knowledge base.
+
+## Package for Kaggle
+
+```bash
+python scripts/prepare_kaggle_dataset.py --user YOUR_KAGGLE_USERNAME --slug sdx-dataset
+kaggle datasets create -p data/kaggle_upload --dir-mode zip
+```
+
+Bundles `sft.jsonl` + `dpo.jsonl` into one dataset. The notebooks read them from
+`/kaggle/input/sdx-dataset/{sft,dpo}.jsonl` (keep the `sdx-dataset` slug, or update the
+`SFT_PATH`/`DPO_PATH` cells to match).
 
 ## Training
 
