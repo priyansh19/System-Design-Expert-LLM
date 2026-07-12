@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import platform
 import shutil
+import signal
+import subprocess
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar
 
@@ -80,7 +84,7 @@ class CLITeacher:
     temperature/max_tokens are not exposed by the CLI and are ignored.
     """
 
-    def __init__(self, cfg: ProviderConfig, *, timeout: float = 300.0):
+    def __init__(self, cfg: ProviderConfig, *, timeout: float = 150.0):
         self.cfg = cfg
         self.timeout = timeout
         self._exe = shutil.which("claude") or "claude"
@@ -90,6 +94,21 @@ class CLITeacher:
         system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
         user = "\n\n".join(m["content"] for m in messages if m["role"] != "system")
         return system, user
+
+    @staticmethod
+    def _kill_tree(pid: int) -> None:
+        """Kill a PID and its full descendant tree (claude CLI spawns node children)."""
+        try:
+            if platform.system() == "Windows":
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(pid)],
+                    capture_output=True,
+                    timeout=10,
+                )
+            else:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (OSError, subprocess.SubprocessError):
+            pass
 
     @retry(wait=wait_random_exponential(min=2, max=60), stop=stop_after_attempt(4), reraise=True)
     async def chat(
@@ -111,13 +130,14 @@ class CLITeacher:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=platform.system() != "Windows",  # enables killpg on posix
         )
         try:
             out, err = await asyncio.wait_for(
                 proc.communicate(user.encode("utf-8")), timeout=self.timeout
             )
         except asyncio.TimeoutError:
-            proc.kill()
+            self._kill_tree(proc.pid)
             raise RuntimeError(f"claude cli timed out after {self.timeout}s")
         if proc.returncode != 0:
             msg = err.decode("utf-8", "replace")[:300]
