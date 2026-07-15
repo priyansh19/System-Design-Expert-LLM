@@ -80,6 +80,37 @@ Outputs land in `data/generated/` (gitignored): `sft.jsonl` (`instruction`/`outp
 `dpo.jsonl` (`prompt`/`chosen`/`rejected`). The seed corpus in `data/seed_corpus/` **is**
 tracked — it is the factual grounding and doubles as a future RAG knowledge base.
 
+## Resuming on another machine (e.g. Mac Mini + MLX)
+
+`grounding.jsonl`, the raw paper PDF cache (`data/sources/papers/`), and the raw HF dataset
+cache (`data/sources/hf_datasets/`) are gitignored — multiple GB of derived/re-downloadable
+data that doesn't belong in git history. Two ways to get them on a new machine:
+
+**Rebuild from scratch (no transfer, just re-run the ingesters):**
+```bash
+python scripts/ingest_sources.py      # GitHub references
+python scripts/ingest_papers.py       # re-downloads PDFs listed in data/sources/paper_list.json
+python scripts/ingest_hf_dataset.py   # re-downloads ajibawa-2023/Software-Architecture from HF
+python scripts/ingest_gh_repo.py      # design-gurus/grokking-system-design
+```
+
+**Or pull the prebuilt artifacts from the GitHub Release** (skips re-downloading/re-parsing
+~1020 papers and an 819MB HF dataset):
+```bash
+gh release download data-v1 -p "*.gz" -p "papers.tar"
+gunzip grounding.jsonl.gz && mv grounding.jsonl data/generated/
+gunzip ajibawa-2023__Software-Architecture__Software_Architecture_Final.jsonl.gz \
+  && mkdir -p data/sources/hf_datasets && mv ajibawa-2023*.jsonl data/sources/hf_datasets/
+tar -xf papers.tar -C data/sources
+```
+
+Either way, `sft.jsonl` / `sft_cerebras.jsonl` / `dpo.jsonl` are already tracked in git (they're
+the actual expensive-to-produce generated output, not derived cache), so `run_pipeline.py`
+resumes from the existing pool immediately — recreate `.env` from `.env.example` (never
+committed) and point `TEACHER_PROVIDER` at whatever's fastest locally (e.g. an MLX server
+exposed as an OpenAI-compatible endpoint — point `ORNITH_BASE_URL`/`OLLAMA_BASE_URL` at it,
+or add a new provider entry in `src/sdx/config.py`).
+
 ## Evaluation
 
 Before spending Kaggle GPU-hours, score the pipeline's own output on a held-out set —
