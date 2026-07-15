@@ -52,24 +52,27 @@ any section, do not add others, do not change the heading level:
 Write a thorough but focused answer (600-1100 words). No preamble, start at the first header."""
 
 
-def _refs_for(scn: Scenario, notes, grounding: list[dict]) -> str:
+def _refs_for(scn: Scenario, notes, grounding: list[dict]) -> tuple[str, list[str]]:
     picked = notes_by_slugs(notes, scn.topics)
     if not picked:  # fall back to a small default set if topics didn't match
         picked = notes[:4]
     parts = [f"[curated:{n.slug}] {n.title}\n{n.text}" for n in picked]
+    ref_ids = [f"curated:{n.slug}" for n in picked]
     # Real authoritative excerpts from the GitHub grounding pool, retrieved by relevance.
     for g in retrieve_grounding(scn.prompt + " " + " ".join(scn.topics), grounding, k=3):
         parts.append(f"[source:{g['source']}] {g['heading']}\n{g['text']}")
-    return "\n\n---\n\n".join(parts)
+        ref_ids.append(f"{g['source']}#{g['heading']}")
+    return "\n\n---\n\n".join(parts), ref_ids
 
 
 async def _one(teacher: Teacher, scn: Scenario, notes, grounding: list[dict], temp: float) -> SFTRecord:
+    refs_text, ref_ids = _refs_for(scn, notes, grounding)
     msgs = [
         {"role": "system", "content": SYSTEM},
         {
             "role": "user",
             "content": PROMPT_TMPL.format(
-                prompt=scn.prompt, refs=_refs_for(scn, notes, grounding), sections=SECTIONS_BLOCK
+                prompt=scn.prompt, refs=refs_text, sections=SECTIONS_BLOCK
             ),
         },
     ]
@@ -81,6 +84,7 @@ async def _one(teacher: Teacher, scn: Scenario, notes, grounding: list[dict], te
         domain=scn.domain,
         scale=scn.scale,
         topics=scn.topics,
+        retrieved_refs=ref_ids,
     )
 
 

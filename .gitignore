@@ -8,11 +8,30 @@ __pycache__/
 *.egg-info/
 .ruff_cache/
 
-# Data artifacts (generated; large). Seed corpus IS tracked.
-data/generated/
+# Data artifacts (generated; large). Seed corpus IS tracked. sft*/dpo.jsonl are the
+# actual (expensive, rate-limited-teacher-produced) training data -- small enough to
+# track directly; grounding.jsonl (RAG chunks, ~1GB) is derived/regenerable and stays
+# out of git (see GitHub Releases assets + README for the pickup path on another machine).
+data/generated/*
+!data/generated/sft.jsonl
+!data/generated/sft_cerebras.jsonl
+!data/generated/dpo.jsonl
 data/cache/
-data/sources/
+# data/sources/ is the raw-input cache (papers/, hf_datasets/): large, re-downloadable via
+# the ingest_*.py scripts. paper_list.json is small curated metadata worth tracking.
+data/sources/*
+!data/sources/paper_list.json
 *.jsonl.tmp
+
+# Runtime logs (regenerated per run; historical error traces, not project content).
+logs/
+
+# Eval run outputs (regenerated per run). eval/prompts.jsonl IS tracked -- fixed held-out set.
+eval/answers/
+eval/scores/
+eval/report.md
+eval/_smoke_prompts.jsonl
+eval/_smoke_answers/
 
 # Model artifacts
 *.gguf

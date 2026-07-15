@@ -10,7 +10,7 @@ Design spec: [`docs/superpowers/specs/2026-07-11-system-design-expert-llm-design
 
 ```
 seed corpus (curated markdown)                data/seed_corpus/*.md
-   -> gen_scenarios.py   (teacher: DeepSeek)  -> scenarios.jsonl
+   -> gen_scenarios.py   (teacher: ornith)   -> scenarios.jsonl
    -> gen_answers.py     (teacher, grounded)  -> sft_raw.jsonl
    -> quality_filter.py  (gates + dedup)      -> sft.jsonl
    -> build_dpo.py       (base = Ollama)      -> dpo.jsonl
@@ -25,14 +25,22 @@ seed corpus (curated markdown)                data/seed_corpus/*.md
 ```bash
 uv venv --python 3.12
 uv pip install -e .
-cp .env.example .env      # set TEACHER_PROVIDER (claude = no key; or add DEEPSEEK_API_KEY)
+cp .env.example .env      # defaults to TEACHER_PROVIDER=ornith (local, no key needed)
 ```
 
-Providers are OpenAI-compatible (or the local `claude` CLI) and selected via env:
-- **Teacher** (`TEACHER_PROVIDER`) — generates scenarios + answers. Options: `claude`
-  (local Claude Code CLI, no API key — auth via the logged-in CLI), `deepseek`, `xai`, `openai`.
-- **Base** (`BASE_PROVIDER`, default `ollama`) — produces DPO "rejected" answers locally.
+Providers are OpenAI-compatible (local Ollama models are OpenAI-compatible too, routed over
+Ollama's native `/api/chat` under the hood) and selected via env:
+- **Teacher** (`TEACHER_PROVIDER`) — generates scenarios + answers. Default: `ornith`
+  (local Ollama model `ornith-nothink:9b`, no API key, no cost, but slow on CPU-only boxes —
+  measured ~8 tok/s). `groq` (free, no card, `qwen/qwen3-32b`, ~400 tok/s, ~30 RPM/6K TPM/1K
+  RPD) is a fast free upgrade, verified safe to train on per Groq's Services Agreement. Paid
+  fallbacks if quality is insufficient: `deepseek`, `xai`, `openai`.
+- **Base** (`BASE_PROVIDER`, default `ollama` / `qwen2.5:0.5b`) — produces DPO "rejected"
+  answers locally; deliberately small+fast since it only needs to be worse, not diverse.
 - **Judge** (`JUDGE_PROVIDER`, default `openai`) — must be a *different family* than the teacher.
+  `nvidia` (free trial key, Llama-family) also works and is judge-ONLY: NVIDIA's trial ToS is
+  "internal testing and evaluation, not production," so it's fine for scoring but must never be
+  the teacher for data that trains the shipped model.
 
 ## Grounding sources
 
@@ -71,6 +79,35 @@ python scripts/build_dpo.py --n 1200      # preference pairs (chosen=teacher, re
 Outputs land in `data/generated/` (gitignored): `sft.jsonl` (`instruction`/`output`) and
 `dpo.jsonl` (`prompt`/`chosen`/`rejected`). The seed corpus in `data/seed_corpus/` **is**
 tracked — it is the factual grounding and doubles as a future RAG knowledge base.
+
+## Evaluation
+
+Before spending Kaggle GPU-hours, score the pipeline's own output on a held-out set —
+cheap, local (no key needed for generation), and it tells you whether a fix (grounding,
+DPO format, domain coverage) actually moved quality, not just changed the code:
+
+```bash
+# 1. Build a held-out prompt set (deduped against data/generated/sft.jsonl so it never
+#    overlaps training data, even if re-run later). Tracked in git -- stays fixed run to run.
+python eval/make_prompts.py --n 60 --out eval/prompts.jsonl
+
+# 2. Generate answers for whichever system(s) you want to compare.
+python eval/generate.py --system teacher-grounded --provider ornith --mode grounded  # the actual pipeline
+python eval/generate.py --system teacher-bare      --provider ornith --mode bare     # ablation: no grounding
+python eval/generate.py --system base-bare          --provider ollama --mode bare     # sanity floor
+
+# 3. Judge every eval/answers/*.jsonl (needs a paid or NVIDIA-trial key: JUDGE_PROVIDER
+#    must differ from TEACHER_PROVIDER's family -- enforced, see .env.example).
+python eval/judge.py --answers "eval/answers/*.jsonl"
+
+# 4. Aggregate into a per-dimension comparison table.
+python eval/report.py
+```
+
+`report.py` writes `eval/report.md`: a mean-score table (`correctness`, `tradeoff_depth`,
+`completeness`, `feasibility`, `clarity`, `overall`) per system, ranked descending. Once
+trained, re-run step 2 with `--provider finetune --mode bare` to add the fine-tune itself to
+the comparison.
 
 ## Package for Kaggle
 

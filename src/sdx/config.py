@@ -45,22 +45,57 @@ _DEFAULT_BASE_URL = {
     "xai": "https://api.x.ai/v1",
     "openai": "https://api.openai.com/v1",
     "ollama": "http://localhost:11434/v1",
-    "claude": "cli",  # sentinel: claude CLI provider is not HTTP-based
+    "ornith": "http://localhost:11434/v1",  # local, same Ollama daemon as "ollama"
+    "finetune": "http://localhost:11434/v1",  # our own model once `ollama create`-d post-training
+    # NVIDIA API Catalog (build.nvidia.com) trial keys are JUDGE-ONLY here, never teacher/base:
+    # the trial ToS grants "limited trial ... internal testing and evaluation purposes, not
+    # production" and bars redistributing Generated Content beyond that (Sections 1.2/1.4/4.2).
+    # Training the shipped fine-tune on it would reopen the exact ToS risk already fixed by
+    # dropping the Claude CLI teacher. Scoring our own answers for a local report never trains
+    # or redistributes anything, so it fits the trial grant cleanly.
+    "nvidia": "https://integrate.api.nvidia.com/v1",
+    # Groq: TEACHER-safe (unlike nvidia/openai-consumer-tiers) -- read Groq's actual Services
+    # Agreement Sec 4.2/8.1: customer owns Inputs/Outputs, Groq itself may not train on them,
+    # and the only customer-side non-compete (Sec 6.3e) bars building a rival inference
+    # *platform*, not downstream fine-tuning. Free tier: no card, 30 RPM/6K TPM/1K RPD.
+    "groq": "https://api.groq.com/openai/v1",
+    # Cerebras: TEACHER-safe -- ToS explicitly states inputs/outputs are governed by the
+    # Third-Party Model Terms and "does not grant Cerebras the right to use Service Content
+    # for the purpose of training or fine-tuning models"; independently verified no retention.
+    # Free tier: no card, 1M TPD / model (gpt-oss-120b, zai-glm-4.7, gemma-4-31b), 5 RPM,
+    # 30K TPM, token-bucket refill (smooth, not a hard daily reset). Run alongside Groq as a
+    # second teacher stream, not a replacement -- doubles effective daily generation budget.
+    "cerebras": "https://api.cerebras.ai/v1",
 }
 _DEFAULT_MODEL = {
     "deepseek": "deepseek-chat",
     "xai": "grok-4-fast",
     "openai": "gpt-4o",
-    "ollama": "qwen2.5:7b",
-    "claude": "sonnet",  # CLI model alias; auth via the logged-in claude CLI
+    "ollama": "qwen2.5:0.5b",  # fast+weak: only needs to be worse for DPO 'rejected' answers
+    "ornith": "ornith-nothink:9b",  # local teacher; staff-architect persona baked into the Modelfile
+    "finetune": "system-design-expert",  # tag used by deploy/ once the merged GGUF is `ollama create`-d
+    # Llama family, not Qwen -- keeps judge family != ornith's Qwen3 base per the bias control.
+    "nvidia": "meta/llama-3.3-70b-instruct",
+    # Qwen3-32B, Apache-2.0 (no Llama-license naming/attribution encumbrance on the shipped
+    # model), same architecture family as ornith but far bigger/faster (~400 tok/s on Groq's
+    # LPUs vs ~8 tok/s local CPU). Supports response_format=json_object (chat_json path).
+    "groq": "qwen/qwen3-32b",
+    # gemma-4-31b: Google Gemma 4, 31B, ~1850 tok/s on Cerebras hardware. Supports
+    # response_format=json_object. NOTE (accepted tradeoff, not the Apache-2.0-clean default):
+    # Gemma's Terms of Use define any model trained via distillation on Gemma outputs as a
+    # "Model Derivative" bound by Gemma's Terms/Prohibited Use Policy -- unlike gpt-oss-120b
+    # (Apache 2.0, zero downstream encumbrance) or groq's qwen3-32b above, the model shipped
+    # from this stream's data inherits that obligation. Chosen deliberately anyway; see
+    # docs/superpowers/specs/ risk log for the explicit call.
+    "cerebras": "gemma-4-31b",
 }
-# Providers that need no real API key (local / CLI-authenticated).
-_NO_KEY = {"ollama", "claude"}
+# Providers that need no real API key (local / Ollama-served).
+_NO_KEY = {"ollama", "ornith", "finetune"}
 
 
 def provider_config(provider: str | None = None) -> ProviderConfig:
     """Resolve a provider's config from env. Defaults to TEACHER_PROVIDER."""
-    provider = (provider or os.getenv("TEACHER_PROVIDER", "deepseek")).lower()
+    provider = (provider or os.getenv("TEACHER_PROVIDER", "ornith")).lower()
     prefix = provider.upper()
     api_key = "ollama" if provider in _NO_KEY else _require(f"{prefix}_API_KEY")
     base_url = os.getenv(f"{prefix}_BASE_URL", "").strip() or _DEFAULT_BASE_URL.get(provider, "")
@@ -71,7 +106,7 @@ def provider_config(provider: str | None = None) -> ProviderConfig:
 
 
 def teacher_config() -> ProviderConfig:
-    return provider_config(os.getenv("TEACHER_PROVIDER", "deepseek"))
+    return provider_config(os.getenv("TEACHER_PROVIDER", "ornith"))
 
 
 def judge_config() -> ProviderConfig:

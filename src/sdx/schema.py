@@ -34,6 +34,7 @@ class SFTRecord(BaseModel):
     domain: str
     scale: str
     topics: list[str] = Field(default_factory=list)
+    retrieved_refs: list[str] = Field(default_factory=list)  # grounding chunk ids used, for audit
 
 
 class DPORecord(BaseModel):

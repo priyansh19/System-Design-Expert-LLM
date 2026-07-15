@@ -13,7 +13,10 @@ Fine-tune an open 7–8B LLM into a **best-in-class architecture advisor for rea
 
 - **Compute:** Kaggle free GPU only — single P100 (16GB) preferred, or 2×T4. ~30 GPU-hrs/week, 12h max per session.
 - **Data strategy:** Hybrid — curated seed corpus + synthetic expansion.
-- **Teacher model:** Paid API, DeepSeek-V3 (cheap, strong technical reasoning). Estimated total cost ~$3–8.
+- **Teacher model:** Local Ollama model `ornith-nothink:9b` (Qwen3-arch, open-weight) —
+  free, unlimited generation, and no ToS conflict from training on a proprietary vendor's
+  outputs. Paid fallback: DeepSeek-V3 (cheap, strong technical reasoning, ~$3–8 est.) if
+  local teacher quality proves insufficient after spot-checking against the eval rubric.
 - **Evaluation:** LLM-as-judge vs baselines.
 - **Delivery:** Both GGUF (local Ollama) and Hugging Face repo (adapter + merged weights).
 
@@ -88,7 +91,8 @@ SystemDesignExpertLLM/
 |------|------------|
 | Kaggle 12h session cutoff | Checkpoint + resume via Kaggle Dataset |
 | Teacher hallucination | Seed-corpus grounding + judge-based filter |
-| DeepSeek API cost | Capped; ~$3–8 est. for 10k pairs |
+| DeepSeek API cost | Not incurred by default (local teacher); capped ~$3–8 if the paid fallback is used |
+| Local teacher quality ceiling (9B vs. frontier) | Judge (different family, §5) scores the fine-tune against a frontier reference baseline; fall back to DeepSeek teacher if the gap is too large to close via SFT/DPO |
 | Judge bias | Judge family != teacher family; randomized order; fixed rubric; human spot-check |
 | Single-GPU memory limits | QLoRA 4-bit + Unsloth + max_seq 4096 + packing |
 

@@ -72,42 +72,54 @@ def load_grounding(path: Path | None = None) -> list[dict]:
 
 
 class _BM25:
-    """Minimal BM25 index over grounding chunks (no external deps)."""
+    """BM25 index over grounding chunks (no external deps).
+
+    Term-at-a-time scoring over an inverted index: top() only touches documents that
+    share at least one token with the query (via postings[term]), not every document in
+    the pool. A naive per-document linear scan is O(n_docs) per query regardless of query
+    specificity -- fine at a few thousand chunks, but a real bottleneck once the grounding
+    pool reaches hundreds of thousands of rows (each scenario/answer call issues its own
+    retrieval). This keeps query cost proportional to how common the query's terms are,
+    not to corpus size, and only stores document lengths (not full token lists) per doc.
+    """
 
     def __init__(self, pool: list[dict], k1: float = 1.5, b: float = 0.75):
         self.pool = pool
         self.k1, self.b = k1, b
-        self.docs = [_tok_list(c.get("heading", "") + " " + c.get("text", "")) for c in pool]
-        self.freqs = [{} for _ in self.docs]
+        self.doc_lens: list[int] = []
+        self.postings: dict[str, dict[int, int]] = {}
         df: dict[str, int] = {}
-        for i, toks in enumerate(self.docs):
+        for i, c in enumerate(pool):
+            toks = _tok_list(c.get("heading", "") + " " + c.get("text", ""))
+            self.doc_lens.append(len(toks))
+            seen: set[str] = set()
             for t in toks:
-                self.freqs[i][t] = self.freqs[i].get(t, 0) + 1
-            for t in set(toks):
+                bucket = self.postings.setdefault(t, {})
+                bucket[i] = bucket.get(i, 0) + 1
+                seen.add(t)
+            for t in seen:
                 df[t] = df.get(t, 0) + 1
-        n = max(1, len(self.docs))
-        self.avgdl = sum(len(d) for d in self.docs) / n
+        n = max(1, len(self.doc_lens))
+        self.avgdl = (sum(self.doc_lens) / n) or 1.0
         # idf with +1 smoothing so common terms contribute ~0, rare terms dominate.
         self.idf = {t: math.log(1 + (n - c + 0.5) / (c + 0.5)) for t, c in df.items()}
 
     def top(self, query: str, k: int) -> list[dict]:
         q = _tok_list(query)
-        if not q or not self.docs:
+        if not q or not self.doc_lens:
             return []
-        scored: list[tuple[float, int]] = []
-        for i, freq in enumerate(self.freqs):
-            dl = len(self.docs[i]) or 1
-            s = 0.0
-            for t in q:
-                f = freq.get(t)
-                if not f:
-                    continue
-                idf = self.idf.get(t, 0.0)
-                s += idf * (f * (self.k1 + 1)) / (f + self.k1 * (1 - self.b + self.b * dl / self.avgdl))
-            if s > 0:
-                scored.append((s, i))
-        scored.sort(key=lambda x: -x[0])
-        return [self.pool[i] for _, i in scored[:k]]
+        scores: dict[int, float] = {}
+        for t in q:
+            bucket = self.postings.get(t)
+            if not bucket:
+                continue
+            idf = self.idf.get(t, 0.0)
+            for i, f in bucket.items():
+                dl = self.doc_lens[i] or 1
+                s = idf * (f * (self.k1 + 1)) / (f + self.k1 * (1 - self.b + self.b * dl / self.avgdl))
+                scores[i] = scores.get(i, 0.0) + s
+        top_idx = sorted(scores, key=lambda i: -scores[i])[:k]
+        return [self.pool[i] for i in top_idx]
 
 
 _bm25_cache: dict[int, _BM25] = {}

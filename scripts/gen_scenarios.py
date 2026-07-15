@@ -21,6 +21,7 @@ from sdx.schema import Scenario
 DOMAINS = [
     "fintech", "social", "ecommerce", "iot", "media-streaming", "healthcare",
     "logistics", "gaming", "ads", "developer-tools", "ride-sharing", "collaboration",
+    "ai-infrastructure",
 ]
 SCALES = ["startup", "mid-scale", "hyperscale"]
 

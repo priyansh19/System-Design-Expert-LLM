@@ -1,21 +1,15 @@
 """Async, provider-agnostic chat client with retry + bounded concurrency.
 
-Any OpenAI-compatible endpoint works (DeepSeek, xAI/Grok, OpenAI). Used as the
-teacher for synthetic generation and as the judge for evaluation.
+Any OpenAI-compatible endpoint works (DeepSeek, xAI/Grok, OpenAI, local Ollama). Used as
+the teacher for synthetic generation, the base for DPO negatives, and the judge for eval.
 """
-
-from __future__ import annotations
 
 import asyncio
 import json
-import os
-import platform
-import shutil
-import signal
-import subprocess
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar
 
+import httpx
 from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 
@@ -25,43 +19,9 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 
-class Teacher:
-    """Thin wrapper over an OpenAI-compatible async client."""
-
-    def __init__(self, cfg: ProviderConfig):
-        self.cfg = cfg
-        self.client = AsyncOpenAI(api_key=cfg.api_key, base_url=cfg.base_url)
-
-    @retry(wait=wait_random_exponential(min=2, max=60), stop=stop_after_attempt(6), reraise=True)
-    async def chat(
-        self,
-        messages: list[dict[str, str]],
-        *,
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
-        json_mode: bool = False,
-    ) -> str:
-        kwargs: dict[str, Any] = {
-            "model": self.cfg.model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
-        resp = await self.client.chat.completions.create(**kwargs)
-        content = resp.choices[0].message.content
-        if not content:
-            raise ValueError("Empty completion from provider")
-        return content
-
-    async def chat_json(self, messages: list[dict[str, str]], **kw: Any) -> Any:
-        raw = await self.chat(messages, json_mode=True, **kw)
-        return json.loads(raw)
-
-
 def _extract_json(raw: str) -> Any:
-    """Parse JSON from CLI text output, tolerating markdown fences / prose."""
+    """Parse JSON, tolerating markdown fences (some local models wrap `format: json`
+    output in ```json ... ``` regardless of the JSON-grammar constraint) or stray prose."""
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.split("```", 2)[1]
@@ -77,40 +37,28 @@ def _extract_json(raw: str) -> Any:
         return json.loads(raw[start : end + 1])
 
 
-class CLITeacher:
-    """Teacher backed by the local `claude` CLI (Claude Code print mode).
+class Teacher:
+    """Thin wrapper over an OpenAI-compatible async client.
 
-    Same async surface as Teacher. Auth/model come from the CLI's own login;
-    temperature/max_tokens are not exposed by the CLI and are ignored.
+    Local Ollama-served "thinking" models (Qwen3-arch, e.g. ornith-nothink:9b) ignore
+    `think`/`extra_body` passed through the OpenAI-compat `/v1/chat/completions` route on
+    Ollama 0.31.1 — verified empirically: the hidden reasoning trace still runs, burning
+    the whole `max_tokens` budget and often returning empty `content`. Ollama's *native*
+    `/api/chat` endpoint honors top-level `think: false` correctly and skips the reasoning
+    trace entirely (~15x faster for short completions). So Ollama-family providers bypass
+    the OpenAI SDK and hit `/api/chat` directly; every other provider is unaffected.
     """
 
-    def __init__(self, cfg: ProviderConfig, *, timeout: float = 150.0):
+    def __init__(self, cfg: ProviderConfig):
         self.cfg = cfg
-        self.timeout = timeout
-        self._exe = shutil.which("claude") or "claude"
+        self._is_ollama = "11434" in cfg.base_url or cfg.name in {"ollama", "ornith", "finetune"}
+        if self._is_ollama:
+            root = cfg.base_url.rsplit("/v1", 1)[0] or cfg.base_url
+            self._http = httpx.AsyncClient(base_url=root, timeout=300.0)
+        else:
+            self.client = AsyncOpenAI(api_key=cfg.api_key, base_url=cfg.base_url)
 
-    @staticmethod
-    def _split(messages: list[dict[str, str]]) -> tuple[str, str]:
-        system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
-        user = "\n\n".join(m["content"] for m in messages if m["role"] != "system")
-        return system, user
-
-    @staticmethod
-    def _kill_tree(pid: int) -> None:
-        """Kill a PID and its full descendant tree (claude CLI spawns node children)."""
-        try:
-            if platform.system() == "Windows":
-                subprocess.run(
-                    ["taskkill", "/T", "/F", "/PID", str(pid)],
-                    capture_output=True,
-                    timeout=10,
-                )
-            else:
-                os.killpg(os.getpgid(pid), signal.SIGKILL)
-        except (OSError, subprocess.SubprocessError):
-            pass
-
-    @retry(wait=wait_random_exponential(min=2, max=60), stop=stop_after_attempt(4), reraise=True)
+    @retry(wait=wait_random_exponential(min=2, max=60), stop=stop_after_attempt(6), reraise=True)
     async def chat(
         self,
         messages: list[dict[str, str]],
@@ -119,43 +67,80 @@ class CLITeacher:
         max_tokens: int = 4096,
         json_mode: bool = False,
     ) -> str:
-        system, user = self._split(messages)
-        args = [self._exe, "-p", "--output-format", "text"]
-        if self.cfg.model and self.cfg.model != "cli":
-            args += ["--model", self.cfg.model]
-        if system:
-            args += ["--system-prompt", system]
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=platform.system() != "Windows",  # enables killpg on posix
-        )
-        try:
-            out, err = await asyncio.wait_for(
-                proc.communicate(user.encode("utf-8")), timeout=self.timeout
-            )
-        except asyncio.TimeoutError:
-            self._kill_tree(proc.pid)
-            raise RuntimeError(f"claude cli timed out after {self.timeout}s")
-        if proc.returncode != 0:
-            msg = err.decode("utf-8", "replace")[:300]
-            raise RuntimeError(f"claude cli rc={proc.returncode}: {msg}")
-        text = out.decode("utf-8", "replace").strip()
-        if not text:
-            raise ValueError("Empty completion from claude cli")
-        return text
+        if self._is_ollama:
+            return await self._chat_ollama_native(messages, temperature, max_tokens, json_mode)
+        kwargs: dict[str, Any] = {
+            "model": self.cfg.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        if self.cfg.name == "groq":
+            # Qwen3 (and other reasoning models) on Groq emit a <think>...</think> preamble
+            # by default, which would pollute SFT/DPO training text and breaks Groq's own
+            # JSON-mode validation (the raw completion must itself be valid JSON). "hidden"
+            # strips reasoning from the response entirely, matching the "think": False the
+            # local ollama path already forces. Reasoning tokens still count against
+            # max_tokens even when hidden, so pad the budget -- otherwise a small
+            # max_tokens (e.g. judge/scenario JSON calls) gets consumed entirely by
+            # invisible thinking, leaving nothing (or a truncated answer) as content.
+            kwargs["extra_body"] = {"reasoning_format": "hidden"}
+            kwargs["max_tokens"] = max_tokens + 2000
+        elif self.cfg.name == "cerebras" and self.cfg.model == "gpt-oss-120b":
+            # gpt-oss-120b is a reasoning model; same failure mode as Groq's Qwen3 --
+            # reasoning tokens count against max_tokens even though the default format
+            # already separates them into their own field, so a small max_tokens budget
+            # (e.g. scenario/judge JSON calls) can be fully consumed by reasoning before any
+            # content is emitted, yielding an empty completion. "hidden" drops reasoning
+            # entirely for defense in depth. reasoning_effort=medium (model default) is kept
+            # deliberately, not turned down to "low" -- system-design tradeoff answers need
+            # real reasoning depth, not fast/shallow completions; padding is sized up
+            # accordingly since medium spends more reasoning tokens than low.
+            kwargs["extra_body"] = {"reasoning_format": "hidden", "reasoning_effort": "medium"}
+            kwargs["max_tokens"] = max_tokens + 4000
+        elif self.cfg.name == "cerebras" and self.cfg.model == "gemma-4-31b":
+            # Gemma 4 31B has reasoning DISABLED by default (unlike gpt-oss/GLM) and does NOT
+            # support "hidden"/"raw"/"clear_thinking"/"preserve_thinking" reasoning_format
+            # values -- passing one would error, so this branch omits reasoning_format
+            # entirely and relies on the (parsed-style) default to keep reasoning out of the
+            # content field. reasoning_effort=medium explicitly enables reasoning ("none" is
+            # the default/disabled) for the same real-reasoning-depth reason as gpt-oss above.
+            # Reasoning tokens still count against max_tokens once enabled, so pad the budget.
+            kwargs["extra_body"] = {"reasoning_effort": "medium"}
+            kwargs["max_tokens"] = max_tokens + 4000
+        resp = await self.client.chat.completions.create(**kwargs)
+        content = resp.choices[0].message.content
+        if not content:
+            raise ValueError("Empty completion from provider")
+        return content
+
+    async def _chat_ollama_native(
+        self, messages: list[dict[str, str]], temperature: float, max_tokens: int, json_mode: bool
+    ) -> str:
+        payload: dict[str, Any] = {
+            "model": self.cfg.model,
+            "messages": messages,
+            "think": False,
+            "stream": False,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+        if json_mode:
+            payload["format"] = "json"
+        resp = await self._http.post("/api/chat", json=payload)
+        resp.raise_for_status()
+        content = resp.json().get("message", {}).get("content", "")
+        if not content:
+            raise ValueError("Empty completion from provider")
+        return content
 
     async def chat_json(self, messages: list[dict[str, str]], **kw: Any) -> Any:
         raw = await self.chat(messages, json_mode=True, **kw)
         return _extract_json(raw)
 
 
-def make_teacher(cfg: ProviderConfig) -> "Teacher | CLITeacher":
-    """Return the right backend for a provider (CLI for `claude`, HTTP otherwise)."""
-    if cfg.name == "claude":
-        return CLITeacher(cfg)
+def make_teacher(cfg: ProviderConfig) -> Teacher:
     return Teacher(cfg)
 
 
@@ -165,19 +150,31 @@ async def map_bounded(
     *,
     concurrency: int,
     on_error: str = "skip",  # "skip" -> None in output; "raise" -> propagate
+    label: str = "",
 ) -> list[R | None]:
-    """Run `worker` over `items` with a bounded semaphore, preserving order."""
+    """Run `worker` over `items` with a bounded semaphore, preserving order.
+
+    On "skip", failures are silent to the caller (None in the output list) but NOT
+    silent to stdout: a one-line summary + first error is printed so a batch that goes
+    entirely to zero (e.g. a rate-limit/quota wall) is diagnosable from the log alone
+    instead of looking identical to "nothing matched the gates".
+    """
     sem = asyncio.Semaphore(concurrency)
     results: list[R | None] = [None] * len(items)
+    errors: list[str] = []
 
     async def run(idx: int, item: T) -> None:
         async with sem:
             try:
                 results[idx] = await worker(item)
-            except Exception:
+            except Exception as exc:
                 if on_error == "raise":
                     raise
                 results[idx] = None
+                errors.append(f"{type(exc).__name__}: {exc}")
 
     await asyncio.gather(*(run(i, it) for i, it in enumerate(items)))
+    if errors:
+        tag = f" {label}" if label else ""
+        print(f"[map_bounded{tag}] {len(errors)}/{len(items)} failed; first: {errors[0][:300]}")
     return results
