@@ -6,6 +6,7 @@ the teacher for synthetic generation, the base for DPO negatives, and the judge 
 
 import asyncio
 import json
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar
 
@@ -52,10 +53,20 @@ class Teacher:
     def __init__(self, cfg: ProviderConfig):
         self.cfg = cfg
         self._is_ollama = "11434" in cfg.base_url or cfg.name in {"ollama", "ornith", "finetune"}
+        # mesh-llm private-mesh endpoint: OpenAI-compatible llama.cpp under the hood. Qwen3
+        # GGUFs served there emit a <think> preamble by default (same failure mode as Groq's
+        # hosted Qwen3); no reasoning_format knob exists, so the mesh branch in chat() uses
+        # Qwen3's documented /no_think soft switch plus response-side <think> stripping.
+        self._is_mesh = cfg.name.startswith("mesh")
         if self._is_ollama:
             root = cfg.base_url.rsplit("/v1", 1)[0] or cfg.base_url
-            self._http = httpx.AsyncClient(base_url=root, timeout=300.0)
+            # 900s, not 300s: a 3000-token answer at ~10 tok/s (slow CPU node) takes ~300s,
+            # which sat exactly on the old timeout -- every long answer timed out and the
+            # tenacity retries burned ~30min before giving up. Faster nodes are unaffected.
+            self._http = httpx.AsyncClient(base_url=root, timeout=900.0)
         else:
+            # Local mesh inference on CPU can be slow per request; the OpenAI SDK default
+            # timeout (600s) is kept, but retries stay bounded by tenacity above.
             self.client = AsyncOpenAI(api_key=cfg.api_key, base_url=cfg.base_url)
 
     @retry(wait=wait_random_exponential(min=2, max=60), stop=stop_after_attempt(6), reraise=True)
@@ -69,6 +80,18 @@ class Teacher:
     ) -> str:
         if self._is_ollama:
             return await self._chat_ollama_native(messages, temperature, max_tokens, json_mode)
+        if self._is_mesh:
+            # Qwen3 /no_think soft switch: appended to the system message (or injected as
+            # one) it disables the thinking trace for the turn. Belt-and-braces: the
+            # response is still <think>-stripped below because the soft switch leaves an
+            # empty <think></think> pair on some llama.cpp template versions.
+            messages = [dict(m) for m in messages]
+            for m in messages:
+                if m["role"] == "system":
+                    m["content"] = m["content"].rstrip() + " /no_think"
+                    break
+            else:
+                messages.insert(0, {"role": "system", "content": "/no_think"})
         kwargs: dict[str, Any] = {
             "model": self.cfg.model,
             "messages": messages,
@@ -76,7 +99,15 @@ class Teacher:
             "max_tokens": max_tokens,
         }
         if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
+            if self._is_mesh:
+                # mesh-llm's skippy runtime 400s on response_format ("structured output ...
+                # not yet implemented"). Prompt-driven JSON + _extract_json instead: nudge
+                # the model and let the tolerant parser strip fences/prose.
+                messages = [dict(m) for m in messages]
+                messages[-1]["content"] += "\n\nReturn ONLY the JSON object. No markdown fences, no commentary."
+                kwargs["messages"] = messages
+            else:
+                kwargs["response_format"] = {"type": "json_object"}
         if self.cfg.name == "groq":
             # Qwen3 (and other reasoning models) on Groq emit a <think>...</think> preamble
             # by default, which would pollute SFT/DPO training text and breaks Groq's own
@@ -110,8 +141,14 @@ class Teacher:
             # Reasoning tokens still count against max_tokens once enabled, so pad the budget.
             kwargs["extra_body"] = {"reasoning_effort": "medium"}
             kwargs["max_tokens"] = max_tokens + 4000
+        if self._is_mesh:
+            # Reasoning tokens count against max_tokens if the soft switch is ignored;
+            # pad like the Groq branch so content never comes back truncated/empty.
+            kwargs["max_tokens"] = max_tokens + 2000
         resp = await self.client.chat.completions.create(**kwargs)
         content = resp.choices[0].message.content
+        if self._is_mesh and content:
+            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
         if not content:
             raise ValueError("Empty completion from provider")
         return content

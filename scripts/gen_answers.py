@@ -49,7 +49,8 @@ Use ALL of these level-2 (##) section headers, verbatim, in this exact order. Do
 any section, do not add others, do not change the heading level:
 {sections}
 
-Write a thorough but focused answer (600-1100 words). No preamble, start at the first header."""
+Write a thorough but focused answer (600-1100 words, HARD LIMIT 1300 -- longer answers are \
+discarded). No preamble, no planning narration, start directly at the first header."""
 
 
 def _refs_for(scn: Scenario, notes, grounding: list[dict]) -> tuple[str, list[str]]:
@@ -76,7 +77,17 @@ async def _one(teacher: Teacher, scn: Scenario, notes, grounding: list[dict], te
             ),
         },
     ]
-    answer = await teacher.chat(msgs, temperature=temp, max_tokens=3000)
+    # 4096, not 3000: verbose teachers (e.g. Qwen3-30B MoE) that overshoot the word target
+    # were getting truncated mid-answer, losing the final required section headers and
+    # failing the structure gate. The word-count gate still rejects overlong answers.
+    answer = await teacher.chat(msgs, temperature=temp, max_tokens=4096)
+    answer = answer.strip()
+    # Some teachers narrate planning prose before the first header despite the "no preamble"
+    # instruction (seen with Qwen3-30B-A3B + think:false). The required format starts at the
+    # first "## " section, so slice there; the structure gate catches headerless answers.
+    idx = answer.find("## ")
+    if idx > 0:
+        answer = answer[idx:]
     return SFTRecord(
         id=scn.id,
         instruction=scn.prompt,

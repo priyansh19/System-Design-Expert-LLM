@@ -22,6 +22,14 @@ DOMAINS = [
     "fintech", "social", "ecommerce", "iot", "media-streaming", "healthcare",
     "logistics", "gaming", "ads", "developer-tools", "ride-sharing", "collaboration",
     "ai-infrastructure",
+    # Expansion (2026-07-23): net yield per round decayed to ~5 as the original 39-cell
+    # domain x scale grid wrapped -- embedding-dedup + the topic-sig cap collapse repeat
+    # visits to the same cell. Doubling the grid doubles the distinct-scenario surface.
+    # ai-agents / llm-serving / agentic domains lead per the project's agentic-AI focus.
+    "ai-agents-platform", "llm-serving-saas", "agentic-workflow-automation",
+    "ml-feature-platform", "vector-search-saas", "edtech", "telecom", "energy-grid",
+    "cybersecurity", "travel-booking", "real-estate", "video-conferencing",
+    "supply-chain", "crypto-exchange", "gov-digital-services", "observability-saas",
 ]
 SCALES = ["startup", "mid-scale", "hyperscale"]
 

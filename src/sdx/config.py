@@ -66,6 +66,17 @@ _DEFAULT_BASE_URL = {
     # 30K TPM, token-bucket refill (smooth, not a hard daily reset). Run alongside Groq as a
     # second teacher stream, not a replacement -- doubles effective daily generation budget.
     "cerebras": "https://api.cerebras.ai/v1",
+    # mesh-llm (github.com/Mesh-LLM/mesh-llm): local/private-mesh OpenAI-compatible endpoint
+    # pooling this laptop + the mac mini. TEACHER-safe for the same reason as ornith -- the
+    # served weights are Apache-2.0 Qwen GGUFs running on our own hardware, no vendor ToS on
+    # outputs. Separate provider name (NOT "ollama"/"ornith") on purpose: llm.py routes those
+    # to Ollama's *native* /api/chat for think:false, which mesh-llm does not implement --
+    # mesh speaks OpenAI-compat only, so thinking is suppressed via Qwen3's /no_think soft
+    # switch + <think> stripping in the mesh branch of Teacher.chat instead.
+    "mesh": "http://localhost:9337/v1",
+    # Same mesh endpoint, second logical provider so BASE_PROVIDER can pin the deliberately
+    # weak DPO-'rejected' model while TEACHER_PROVIDER=mesh serves the big one concurrently.
+    "meshsmall": "http://localhost:9337/v1",
 }
 _DEFAULT_MODEL = {
     "deepseek": "deepseek-chat",
@@ -88,9 +99,12 @@ _DEFAULT_MODEL = {
     # from this stream's data inherits that obligation. Chosen deliberately anyway; see
     # docs/superpowers/specs/ risk log for the explicit call.
     "cerebras": "gemma-4-31b",
+    # Model ids as exposed by mesh-llm's /v1/models for the catalog GGUFs we downloaded.
+    "mesh": "Qwen3-8B-Q4_K_M",
+    "meshsmall": "Qwen2.5-0.5B-Instruct-Q4_K_M",
 }
-# Providers that need no real API key (local / Ollama-served).
-_NO_KEY = {"ollama", "ornith", "finetune"}
+# Providers that need no real API key (local / Ollama-served / mesh-served).
+_NO_KEY = {"ollama", "ornith", "finetune", "mesh", "meshsmall"}
 
 
 def provider_config(provider: str | None = None) -> ProviderConfig:
