@@ -113,6 +113,13 @@ async def main() -> None:
             seen_ids.add(rec.id)
         print(f"resuming from {len(pool)} existing SFT records")
 
+    # Advance the grid start past cells already mined by prior runs. Without this, every
+    # restart rewinds the offset to 0 and re-generates scenarios for the most-exhausted
+    # (domain, scale) cells, which embedding-dedup then mostly discards -- the observed
+    # low net-yield-per-round after a restart. len(pool) is a lower bound on scenarios
+    # already attempted, so seeding from it keeps forward progress monotonic across restarts.
+    resume_offset = len(pool)
+
     for r in range(1, args.rounds + 1):
         sig_counts: dict[tuple[str, ...], int] = {}
         for rec in pool:
@@ -120,7 +127,7 @@ async def main() -> None:
 
         got = await _gen_round(
             teacher, notes, grounding, index, temp, args.per_round, concurrency,
-            offset=(r - 1) * args.per_round,
+            offset=resume_offset + (r - 1) * args.per_round,
         )
         kept = 0
         for rec in got:
